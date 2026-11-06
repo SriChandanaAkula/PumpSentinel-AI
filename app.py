@@ -1,3 +1,4 @@
+
 import os
 import json
 import time
@@ -6,42 +7,53 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+st.set_page_config(
+    page_title="PumpSentinel AI",
+    page_icon="🛠️",
+    layout="wide"
+)
+
 # ---------------------------------------------------------
-# LOAD MODEL + SCALER + META
+# LOAD TRAINED MODEL
 # ---------------------------------------------------------
 MODEL_DIR = "model"
-MODEL_PATH = f"{MODEL_DIR}/pump_model.pkl"
-SCALER_PATH = f"{MODEL_DIR}/scaler.pkl"
-META_PATH = f"{MODEL_DIR}/feature_meta.json"
 
-if not (os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH) and os.path.exists(META_PATH)):
-    st.error(
-        "❌ Model files missing. Please run train_model.py and ensure /model contains:\n"
-        "pump_model.pkl, scaler.pkl, feature_meta.json"
-    )
+@st.cache_resource
+def load_model():
+    model = joblib.load(os.path.join(MODEL_DIR, "pump_model.pkl"))
+    scaler = joblib.load(os.path.join(MODEL_DIR, "scaler.pkl"))
+
+    with open(os.path.join(MODEL_DIR, "feature_meta.json"), "r") as f:
+        meta = json.load(f)
+
+    return model, scaler, meta
+
+try:
+    model, scaler, meta = load_model()
+except Exception as e:
+    st.error(f"Unable to load trained model: {e}")
     st.stop()
 
-model = joblib.load(MODEL_PATH)
-scaler = joblib.load(SCALER_PATH)
-meta = json.load(open(META_PATH))
-
 label_map = meta["label_map"]
-inv_label_map = {v: k for k, v in label_map.items()}
+inv_label_map = {int(v): k for k, v in label_map.items()}
 
 # ---------------------------------------------------------
-# OPENAI AI HYPOTHESIS GENERATOR
+# AI HYPOTHESIS
 # ---------------------------------------------------------
-def generate_hypothesis(vibration, temperature, current, status, risk):
+def generate_hypothesis(vibration, temperature, power, status, risk):
+
     api_key = os.getenv("OPENAI_API_KEY")
 
     if not api_key:
-        return (
-            "⚠ OpenAI API key missing.\n\n"
-            "Fallback hypothesis:\n"
-            "- High vibration → misalignment or bearing wear\n"
-            "- High temperature → lubrication or cooling issue\n"
-            "- High current → overload or electrical fault"
-        )
+        return """
+**General diagnostic guidance**
+
+- Review vibration trends for possible mechanical abnormalities.
+- Check temperature trends for possible thermal abnormalities.
+- Review electrical power consumption for unusual changes.
+
+These are general checks, not confirmed failure causes.
+"""
 
     try:
         from openai import OpenAI
@@ -49,28 +61,34 @@ def generate_hypothesis(vibration, temperature, current, status, risk):
         client = OpenAI(api_key=api_key)
 
         prompt = f"""
-You are a senior mechanical engineer diagnosing industrial pump failures.
+You are an industrial pump monitoring assistant.
 
-Sensor Inputs:
-- Vibration: {vibration} mm/s
-- Temperature: {temperature} °C
-- Motor Current: {current} A
+Dataset-derived sensor features:
+- Vibration feature: {vibration}
+- Temperature feature: {temperature}
+- Electrical power feature: {power}
 
-ML Prediction:
-- Status: {status}
-- Failure Risk Score: {risk:.3f}
+ML predicted status: {status}
+Predicted critical-class probability: {risk:.3f}
 
+Explain the prediction cautiously.
 Provide:
-1) Most likely root cause
-2) Mechanical reasoning
-3) 3 recommended maintenance actions
-4) Urgency level
+1. Possible interpretation
+2. Three maintenance checks
+3. Suggested urgency
+
+Do not claim a confirmed mechanical fault from these features alone.
+The values are dataset-derived features, not necessarily calibrated
+physical measurements.
 """
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are an expert in industrial pump diagnostics."},
+                {
+                    "role": "system",
+                    "content": "You assist with industrial pump condition monitoring."
+                },
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3
@@ -78,170 +96,210 @@ Provide:
 
         return response.choices[0].message.content
 
-    except Exception as e:
-        return (
-            f"⚠ OpenAI Error: {e}\n\n"
-            "Fallback hypothesis:\n"
-            "- Inspect bearings\n"
-            "- Check lubrication and cooling\n"
-            "- Verify electrical load"
-        )
+    except Exception:
+        return """
+AI hypothesis service is currently unavailable.
+
+Please review the sensor trends and follow the recommended
+maintenance inspection procedures.
+"""
 
 # ---------------------------------------------------------
-# HISTORY STATE
+# SESSION HISTORY
 # ---------------------------------------------------------
 if "history" not in st.session_state:
     st.session_state.history = []
-
-def add_history(v, t, c, status, risk, hypothesis):
-    st.session_state.history.append({
-        "timestamp": int(time.time()),
-        "vibration": float(v),
-        "temperature": float(t),
-        "current": float(c),
-        "status": status,
-        "risk": float(risk),
-        "hypothesis": hypothesis
-    })
-
-def history_df():
-    if not st.session_state.history:
-        return pd.DataFrame(
-            columns=["timestamp","vibration","temperature","current","status","risk","hypothesis"]
-        )
-    df = pd.DataFrame(st.session_state.history)
-    df["time"] = pd.to_datetime(df["timestamp"], unit="s")
-    return df
 
 def clear_history():
     st.session_state.history = []
 
 # ---------------------------------------------------------
-# STREAMLIT UI
+# APPLICATION UI
 # ---------------------------------------------------------
-st.set_page_config(page_title="PumpGuard AI", page_icon="🛠", layout="wide")
+st.title("🛠️ PumpSentinel AI")
+st.markdown(
+    "### Intelligent Industrial Pump Health Monitoring"
+)
 
-st.title("🛠 PumpGuard AI — Intelligent Pump Health Analyzer")
-st.markdown("Predict pump health, failure risk, and view visual dashboards.")
+st.write(
+    "Enter the three dataset-derived sensor features to "
+    "predict the pump's operating condition."
+)
 
-# INPUT AREA
-col1, col2, col3, col4 = st.columns([2,2,2,1])
-vibration = col1.number_input("Vibration (mm/s)", min_value=0.0, step=0.1, value=3.0)
-temperature = col2.number_input("Temperature (°C)", min_value=0.0, step=0.1, value=35.0)
-current = col3.number_input("Motor Current (A)", min_value=0.0, step=0.1, value=6.0)
-analyze = col4.button("🔍 Analyze")
+col1, col2, col3 = st.columns(3)
+
+vibration = col1.number_input(
+    "Vibration feature (VS1)",
+    value=3.0,
+    step=0.1
+)
+
+temperature = col2.number_input(
+    "Temperature feature (TS1–TS4)",
+    value=35.0,
+    step=0.1
+)
+
+power = col3.number_input(
+    "Electrical power feature (EPS1)",
+    value=6.0,
+    step=0.1
+)
+
+analyze = st.button("🔍 Analyze Pump Health")
 
 # ---------------------------------------------------------
-# ANALYSIS BLOCK
+# PREDICTION
 # ---------------------------------------------------------
 if analyze:
-    X = np.array([[vibration, temperature, current]])
-    X_scaled = scaler.transform(X)
 
-    proba = model.predict_proba(X_scaled)[0]
-    idx = int(np.argmax(proba))
-    status = inv_label_map[idx]
-    risk = float(proba[2]) if len(proba) > 2 else float(max(proba))
+    try:
+        features = meta["features"]
 
-    color = {"HEALTHY":"green","WARNING":"orange","CRITICAL":"red"}.get(status, "black")
+        input_values = {
+            "vibration": vibration,
+            "temperature": temperature,
+            "power": power
+        }
 
-    st.markdown(
-        f"## Pump Status: <span style='color:{color}'>{status}</span>",
-        unsafe_allow_html=True
-    )
-    st.markdown(f"### Failure Risk Score: **{risk:.3f}**")
+        X = np.array(
+            [[input_values[name] for name in features]],
+            dtype=float
+        )
 
-    # Hypothesis
-    st.subheader("🤖 AI-Generated Hypothesis")
-    hypothesis = generate_hypothesis(vibration, temperature, current, status, risk)
-    st.write(hypothesis)
+        X_scaled = scaler.transform(X)
 
-    # Maintenance
-    st.subheader("🔧 Maintenance Recommendations")
-    recs = []
-    if vibration > 6:
-        recs.append("• Inspect bearings & alignment (high vibration).")
-    if temperature > 70:
-        recs.append("• Check lubrication & cooling system (overheating).")
-    if current > 12:
-        recs.append("• Inspect motor load or electrical faults (high current).")
-    if not recs:
-        recs.append("• No immediate issues detected — continue monitoring.")
-    st.write("\n".join(recs))
+        probabilities = model.predict_proba(X_scaled)[0]
 
-    add_history(vibration, temperature, current, status, risk, hypothesis)
+        predicted_class = int(model.predict(X_scaled)[0])
+        status = inv_label_map[predicted_class]
+
+        class_to_probability = {
+            int(class_id): float(probability)
+            for class_id, probability
+            in zip(model.classes_, probabilities)
+        }
+
+        risk = class_to_probability.get(
+            int(label_map["CRITICAL"]), 0.0
+        )
+
+        st.subheader("📊 Prediction Result")
+
+        st.metric("Pump Health Status", status)
+        st.metric("Critical-Class Probability", f"{risk * 100:.2f}%")
+
+        st.caption(
+            "This probability represents the model's estimated "
+            "probability of the CRITICAL class, not a calibrated "
+            "real-world failure probability."
+        )
+
+        # AI explanation
+        st.subheader("🤖 AI Diagnostic Hypothesis")
+
+        hypothesis = generate_hypothesis(
+            vibration, temperature, power, status, risk
+        )
+
+        st.write(hypothesis)
+
+        # General maintenance guidance
+        st.subheader("🔧 Maintenance Recommendations")
+
+        if status == "CRITICAL":
+            st.error(
+                "Prioritize inspection and follow your plant's "
+                "safety and maintenance procedures."
+            )
+        elif status == "WARNING":
+            st.warning(
+                "Review sensor trends and schedule a maintenance inspection."
+            )
+        else:
+            st.success(
+                "Continue routine monitoring and preventive maintenance."
+            )
+
+        st.write("""
+        - Inspect pump and motor condition.
+        - Review vibration, temperature and power trends.
+        - Compare readings with equipment-specific operating limits.
+        """)
+
+        # Store history
+        st.session_state.history.append({
+            "timestamp": int(time.time()),
+            "vibration": vibration,
+            "temperature": temperature,
+            "power": power,
+            "status": status,
+            "risk": risk,
+            "hypothesis": hypothesis
+        })
+
+    except Exception as e:
+        st.error(f"Prediction error: {e}")
 
 # ---------------------------------------------------------
 # DASHBOARD
 # ---------------------------------------------------------
-st.header("📊 Graphical Analysis Dashboard")
+st.header("📈 Pump Monitoring Dashboard")
 
-df = history_df()
+if not st.session_state.history:
 
-if df.empty:
-    st.info("Perform at least one analysis to populate the dashboard.")
+    st.info("Perform an analysis to populate the dashboard.")
+
 else:
+
     import altair as alt
 
-    # Scatter
-    st.subheader("Vibration vs Risk")
-    st.altair_chart(
-        alt.Chart(df).mark_circle(size=80).encode(
-            x="vibration",
-            y="risk",
-            color="status",
-            tooltip=["time","vibration","temperature","current","status","risk"]
-        ).interactive(),
-        use_container_width=True
+    df = pd.DataFrame(st.session_state.history)
+    df["time"] = pd.to_datetime(df["timestamp"], unit="s")
+
+    st.subheader("Vibration vs Critical-Class Probability")
+
+    chart1 = alt.Chart(df).mark_circle(size=90).encode(
+        x="vibration:Q",
+        y="risk:Q",
+        color="status:N",
+        tooltip=["time", "vibration", "temperature", "power", "status", "risk"]
+    ).interactive()
+
+    st.altair_chart(chart1, use_container_width=True)
+
+    st.subheader("Critical-Class Probability Over Time")
+
+    chart2 = alt.Chart(df).mark_line(
+        point=True
+    ).encode(
+        x="time:T",
+        y="risk:Q",
+        color="status:N"
+    ).interactive()
+
+    st.altair_chart(chart2, use_container_width=True)
+
+    st.subheader("Analysis History")
+
+    st.dataframe(df, use_container_width=True)
+
+    st.download_button(
+        "Download History CSV",
+        df.to_csv(index=False).encode("utf-8"),
+        "pumpsentinel_history.csv",
+        "text/csv"
     )
 
-    # Time Series
-    st.subheader("Risk Over Time")
-    st.altair_chart(
-        alt.Chart(df).mark_line(point=True).encode(
-            x="time:T",
-            y="risk:Q",
-            color="status:N",
-            tooltip=["time","risk","status"]
-        ).interactive(),
-        use_container_width=True
-    )
-
-    # Histogram
-    st.subheader("Risk Distribution")
-    st.altair_chart(
-        alt.Chart(df).mark_bar().encode(
-            alt.X("risk:Q", bin=alt.Bin(maxbins=12)),
-            y="count()",
-            color="status:N"
-        ),
-        use_container_width=True
-    )
-
-    # Table
-    st.subheader("History Table")
-    status_filter = st.multiselect(
-        "Filter by status",
-        df["status"].unique(),
-        default=df["status"].unique()
-    )
-    st.dataframe(df[df["status"].isin(status_filter)], use_container_width=True)
+    if st.button("Clear History"):
+        clear_history()
+        st.rerun()
 
 # ---------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------
 with st.sidebar:
-    st.header("⚙️ Controls")
-    if st.button("Clear History"):
-        clear_history()
-        st.success("History cleared.")
-
-    if not df.empty:
-        st.download_button(
-            "Download CSV",
-            df.to_csv(index=False).encode("utf-8"),
-            "pumpguard_history.csv",
-            "text/csv"
-        )
-
-    st.markdown("— PumpGuard AI by Tenet Σ")
+    st.header("About PumpSentinel AI")
+    st.write("ML-based industrial pump condition monitoring.")
+    st.write("Model: Random Forest Classifier")
+    st.write("Dataset: UCI Hydraulic Systems")

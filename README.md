@@ -131,6 +131,7 @@ PumpSentinel-AI/
 2. Go to https://streamlit.io/cloud  
 3. Select your repository  
 4. Click **Deploy**
+5. Project live link: https://pumpsentinel-ai-dytfkp4iqb6etnrtinvp8j.streamlit.app/
 
 ---
 

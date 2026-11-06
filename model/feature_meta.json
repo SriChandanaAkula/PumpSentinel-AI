@@ -1,0 +1,19 @@
+{
+    "features": [
+        "vibration",
+        "temperature",
+        "power"
+    ],
+    "label_map": {
+        "HEALTHY": 0,
+        "WARNING": 1,
+        "CRITICAL": 2
+    },
+    "units": {
+        "vibration": "Dataset VS1 sensor units",
+        "temperature": "Dataset TS1-TS4 sensor units",
+        "power": "Dataset EPS1 sensor units"
+    },
+    "dataset": "UCI Condition Monitoring of Hydraulic Systems",
+    "accuracy": 0.9523809523809523
+}
